@@ -10,9 +10,7 @@ import {
 import { Server, Socket } from 'socket.io';
 import * as mediasoup from 'mediasoup';
 import { MediasoupService } from './mediasoup.service';
-import mediaCodecs from './mediaCodecs';
 import { consumer, peers, producer, rooms, transport } from './types';
-import { Producer } from 'mediasoup/node/lib/Producer';
 
 /**
  * Worker
@@ -22,9 +20,20 @@ import { Producer } from 'mediasoup/node/lib/Producer';
  *     |-> Consumer Transport(s)
  *         |-> Consumer **/
 
+enum ExactTrackKind {
+  CAM = 'cam',
+  SCREEEN = 'screen',
+  MIC = 'mic',
+  COMPUTERAUDIO = 'computeraudio',
+}
+
 @WebSocketGateway({
   cors: {
-    origin: ['http://localhost:3001'],
+    origin: [
+      'http://localhost:3001',
+      'http://172.23.251.19:3001',
+      'http://localhost:3002',
+    ],
     // credentials: true,
     // exposedHeaders: ['Authorization'],
     // exposedHeaders: '*',
@@ -59,30 +68,32 @@ export class SocketEventsGateway
   handleDisconnect(socket: Socket) {
     console.log('socket disconnected');
     // do some cleanup
-    console.log('peer disconnected');
-    this.consumers = this.removeItems(
-      this.consumers,
-      socket,
-      socket.id,
-      'consumer',
-    );
-    this.producers = this.removeItems(
-      this.producers,
-      socket,
-      socket.id,
-      'producer',
-    );
-    this.transports = this.removeItems(
-      this.transports,
-      socket,
-      socket.id,
-      'transport',
-    );
+    // console.log('peer disconnected');
+    // this.consumers = this.removeItems(
+    //   this.consumers,
+    //   socket,
+    //   socket.id,
+    //   'consumer',
+    // );
+    // this.producers = this.removeItems(
+    //   this.producers,
+    //   socket,
+    //   socket.id,
+    //   'producer',
+    // );
+    this.transports = this.removeItems(this.transports, socket, 'transport');
 
     try {
       console.log('at disconect', this.peers[socket.id]);
       const { roomName } = this.peers[socket.id];
       delete this.peers[socket.id];
+
+      let screenShareScktId = this.rooms[roomName].sharedScreen.socketId;
+      screenShareScktId = screenShareScktId
+        ? screenShareScktId === socket.id
+          ? null
+          : screenShareScktId
+        : null;
 
       // remove socket from room
       this.rooms[roomName] = {
@@ -90,10 +101,20 @@ export class SocketEventsGateway
         peers: this.rooms[roomName].peers.filter(
           (socketId: string) => socketId !== socket.id,
         ),
+        sharedScreen: {
+          socketId: screenShareScktId,
+        },
       };
     } catch (error) {
       console.log('error at this.handleDisconnect', error);
     }
+  }
+
+  @SubscribeMessage('trigger')
+  triggerMe(@ConnectedSocket() socket: Socket) {
+    socket.emit('trigger', {
+      socketId: socket.id,
+    });
   }
 
   @SubscribeMessage('joinRoom')
@@ -117,7 +138,7 @@ export class SocketEventsGateway
       },
     };
 
-    console.log('joinRoom after inserting', this.peers);
+    // console.log('joinRoom after inserting', this.peers);
 
     // get Router RTP Capabilities
     const rtpCapabilities = router.rtpCapabilities;
@@ -131,7 +152,7 @@ export class SocketEventsGateway
     @ConnectedSocket() socket: Socket,
     @MessageBody('consumer') consumer: boolean,
   ) {
-    console.log('createWebRtcTransport: consumer : ', consumer);
+    // console.log('createWebRtcTransport: consumer : ', consumer);
     // get Room Name from Peer's properties
     const roomName = this.peers[socket.id].roomName;
 
@@ -168,12 +189,18 @@ export class SocketEventsGateway
 
     let producerList = [];
     this.producers.forEach((producerData) => {
-      console.log('get prodcers', producerData);
+      // console.log('get prodcers', producerData);
       if (
         producerData.socketId !== socket.id &&
         producerData.roomName === roomName
       ) {
-        producerList = [...producerList, producerData.producer.id];
+        producerList = [
+          ...producerList,
+          {
+            producerId: producerData.producer.id,
+            exactTrackKind: producerData.producer.appData.exactTrackKind,
+          },
+        ];
       }
     });
 
@@ -187,7 +214,7 @@ export class SocketEventsGateway
     @ConnectedSocket() socket: Socket,
     @MessageBody('dtlsParameters') dtlsParameters: any,
   ) {
-    console.log('DTLS PARAMS... ', { dtlsParameters });
+    // console.log('DTLS PARAMS... ', { dtlsParameters });
 
     this.getTransport(socket.id, false).connect({ dtlsParameters });
   }
@@ -200,31 +227,59 @@ export class SocketEventsGateway
     @MessageBody('rtpParameters') rtpParameters: any,
     @MessageBody('appData') appData: any,
   ) {
-    // call produce based on the prameters from the client
+    const { roomName } = this.peers[socket.id];
+    //if there is already screen shared in the room then nobody else should
+    // be able to share their screen
+    if (
+      this.rooms[roomName].sharedScreen.socketId &&
+      (appData.exactTrackKind === ExactTrackKind.SCREEEN ||
+        appData.exactTrackKind === ExactTrackKind.COMPUTERAUDIO)
+    ) {
+      // console.log(
+      //   'at transport produce this.rooms[roomName].sharedScreen.socketId',
+      //   this.rooms[roomName].sharedScreen.socketId,
+      // );
+      //take some action
+      return { error: 'screen already being shared by somebody' };
+    }
+
     const transport = this.getTransport(socket.id, false);
+    // call produce based on the prameters from the client
     const producer = await transport.produce({
       kind,
       rtpParameters,
+      appData,
+      paused: appData.paused,
     });
+    console.log('transport produce producer.paused', producer.paused);
+
+    if (appData.exactTrackKind === ExactTrackKind.SCREEEN)
+      this.rooms[roomName].sharedScreen.socketId = socket.id;
+
+    this.informConsumers(
+      roomName,
+      socket.id,
+      producer.id,
+      appData.exactTrackKind,
+    );
 
     // add producer to the producers array
-    const { roomName } = this.peers[socket.id];
-
     this.addProducer(socket, producer, roomName, transport.id);
-
-    this.informConsumers(roomName, socket.id, producer.id);
 
     console.log('Producer ID: ', producer.id, producer.kind);
 
     producer.on('transportclose', () => {
       console.log('transport for this producer closed ');
+      this.producers = this.producers.filter(
+        (producerData) => producerData.producer.id !== producer.id,
+      );
       producer.close();
     });
 
     // Send back to the client the Producer's id
     return {
       id: producer.id,
-      producersExist: this.producers.length > 1 ? true : false,
+      // producersExist: this.producers.length > 1 ? true : false,
     };
   }
 
@@ -236,14 +291,20 @@ export class SocketEventsGateway
     @MessageBody('serverConsumerTransportId')
     serverConsumerTransportId: string,
   ) {
-    console.log(`DTLS PARAMS: ${dtlsParameters}`);
-    console.log('transport-recv-connect', this.transports);
+    // console.log(`DTLS PARAMS: ${dtlsParameters}`);
+    // console.log('transport-recv-connect', this.transports);
     const consumerTransport = this.transports.find(
       (transportData) =>
         transportData.consumer &&
         transportData.transport.id == serverConsumerTransportId,
     ).transport;
     await consumerTransport.connect({ dtlsParameters });
+  }
+
+  @SubscribeMessage('calldrop')
+  async callDrop(@ConnectedSocket() socket: Socket) {
+    this.handleDisconnect(socket);
+    return { ok: true };
   }
 
   @SubscribeMessage('consume')
@@ -262,6 +323,10 @@ export class SocketEventsGateway
           transportData.transport.id == serverConsumerTransportId,
       ).transport;
 
+      const remoteProducer = this.producers.find(
+        (element) => element.producer.id === remoteProducerId,
+      );
+
       //get send transport id of this remote Producer
       const sendTransPortIdOfRemoteProd = this.producers.find(
         (producerData) => producerData.producer.id === remoteProducerId,
@@ -279,32 +344,20 @@ export class SocketEventsGateway
           producerId: remoteProducerId,
           rtpCapabilities,
           paused: true,
+          appData: remoteProducer.producer.appData,
         });
 
         consumer.on('transportclose', () => {
           console.log('transport close from consumer');
-        });
-
-        consumer.on('producerclose', () => {
-          console.log('producer of consumer closed');
-          socket.emit('producer-closed', {
-            remoteProducerId,
-            producerSendTransPortId: sendTransPortIdOfRemoteProd,
-          });
-
-          // consumerTransport.close();
-          // this.transports = this.transports.filter(
-          //   (transportData) =>
-          //     transportData.transport.id !== consumerTransport.id,
-          // );
-          consumer.close();
           this.consumers = this.consumers.filter(
             (consumerData) => consumerData.consumer.id !== consumer.id,
           );
+          consumer.close();
         });
 
         consumer.on('producerpause', async () => {
           await consumer.pause();
+          consumer.appData.paused = true;
           socket.emit('consumer-pause', {
             id: consumer.id,
             producerSendTransPortId: sendTransPortIdOfRemoteProd,
@@ -312,32 +365,39 @@ export class SocketEventsGateway
         });
 
         consumer.on('producerresume', async () => {
+          console.log('at producer resume');
           await consumer.resume();
+          consumer.appData.paused = false;
           socket.emit('consumer-resume', {
             id: consumer.id,
             producerSendTransPortId: sendTransPortIdOfRemoteProd,
           });
         });
 
+        consumer.on('producerclose', async () => {
+          socket.emit('consumer-close', {
+            id: consumer.id,
+            producerSendTransPortId: sendTransPortIdOfRemoteProd,
+            exactTrackKind: consumer.appData.exactTrackKind,
+          });
+          this.consumers = this.consumers.filter(
+            (consumerData) => consumerData.consumer.id !== consumer.id,
+          );
+          consumer.close();
+        });
+
         this.addConsumer(socket, consumer, roomName, consumerTransport.id);
-
-        const remoteProducer = this.producers.find(
-          (element) => element.producer.id === remoteProducerId,
-        );
-
-        const producerSendTransPortId = this.transports.find(
-          (element) => element.socketId == remoteProducer.socketId,
-        ).transport.id;
 
         // from the consumer extract the following params
         // to send back to the Client
         const params = {
           id: consumer.id,
           producerId: remoteProducerId,
-          producerSendTransPortId: producerSendTransPortId,
+          producerSendTransPortId: sendTransPortIdOfRemoteProd,
           kind: consumer.kind,
           rtpParameters: consumer.rtpParameters,
           serverConsumerId: consumer.id,
+          appData: consumer.appData,
         };
 
         // send the parameters to the client
@@ -362,11 +422,12 @@ export class SocketEventsGateway
     const { consumer } = this.consumers.find(
       (consumerData) => consumerData.consumer.id === serverConsumerId,
     );
+    consumer.appData.paused = false;
     await consumer.resume();
   }
 
   // peer's media paused
-  @SubscribeMessage('producer-media-paused')
+  @SubscribeMessage('producer-media-pause')
   async mediaPaused(
     @ConnectedSocket() socket: Socket,
     @MessageBody('producerId') producerId: string,
@@ -375,7 +436,10 @@ export class SocketEventsGateway
       (ele) => ele.socketId === socket.id && ele.producer.id === producerId,
     );
     //this pause will also trigger producerpause event in associated consumer
-    if (producer) await producer.producer.pause();
+    if (producer) {
+      producer.producer.appData.paused = true;
+      await producer.producer.pause();
+    }
   }
 
   @SubscribeMessage('producer-media-resume')
@@ -386,10 +450,35 @@ export class SocketEventsGateway
     const producer = this.producers.find(
       (ele) => ele.socketId === socket.id && ele.producer.id === producerId,
     );
-    if (producer) await producer.producer.resume();
+    if (producer) {
+      console.log(`producer with id ${producer.producer.id} resumed`);
+      producer.producer.appData.paused = false;
+      await producer.producer.resume();
+    }
   }
 
-  informConsumers(roomName: string, socketId: string, id: string) {
+  //clean producer after closing
+  @SubscribeMessage('producer-media-close')
+  async mediaClosed(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody('producerId') producerId: string,
+  ) {
+    const producer = this.producers.find(
+      (ele) => ele.socketId === socket.id && ele.producer.id === producerId,
+    );
+    if (producer.producer.appData.exactTrackKind === ExactTrackKind.SCREEEN) {
+      const { roomName } = this.peers[socket.id];
+      this.rooms[roomName].sharedScreen.socketId = null;
+    }
+    if (producer) producer.producer.close();
+  }
+
+  informConsumers(
+    roomName: string,
+    socketId: string,
+    id: string,
+    exactTrackKind: ExactTrackKind,
+  ) {
     console.log(`just joined, id ${id} ${roomName}, ${socketId}`);
     // A new producer just joined
     // let all consumers to consume this producer
@@ -401,7 +490,10 @@ export class SocketEventsGateway
       ) {
         const otherPeerSocket = this.peers[transportData.socketId].socket;
         // use socket to send producer id to producer
-        otherPeerSocket.emit('new-producer', { producerId: id });
+        otherPeerSocket.emit('new-producer', {
+          producerId: id,
+          exactTrackKind: exactTrackKind,
+        });
       }
     });
   }
@@ -414,7 +506,7 @@ export class SocketEventsGateway
     return transport.transport;
   }
 
-  async createRoom(roomName, socketId) {
+  async createRoom(roomName: string, socketId: string) {
     // worker.createRouter(options)
     // options = { mediaCodecs, appData }
     // mediaCodecs -> defined above
@@ -451,6 +543,9 @@ export class SocketEventsGateway
     this.rooms[roomName] = {
       router: router,
       peers: [...peers, socketId],
+      sharedScreen: {
+        socketId: null,
+      },
     };
 
     return router;
@@ -495,6 +590,7 @@ export class SocketEventsGateway
 
         transport.on('dtlsstatechange', (dtlsState) => {
           if (dtlsState === 'closed') {
+            console.log('transport dtlsstatechange');
             transport.close();
           }
         });
@@ -553,7 +649,7 @@ export class SocketEventsGateway
     };
   };
 
-  removeItems(items: any[], socket: Socket, socketId: string, type: string) {
+  removeItems(items: any[], socket: Socket, type: string) {
     items.forEach((item) => {
       if (item.socketId === socket.id) {
         item[type].close();

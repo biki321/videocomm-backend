@@ -6,6 +6,10 @@ export type rooms = {
   [key: string]: {
     router: types.Router;
     peers: string[];
+    sharedScreen: {
+      //if null then no screen shared yet
+      socketId: string | null;
+    };
   };
 }; // { roomName1: { Router, rooms: [ socketId1, ... ] }, ...}
 

@@ -95,6 +95,13 @@ export class SocketEventsGateway
           : screenShareScktId
         : null;
 
+      let canvasShareScktId = this.rooms[roomName].sharedCanvas.socketId;
+      canvasShareScktId = canvasShareScktId
+        ? canvasShareScktId === socket.id
+          ? null
+          : canvasShareScktId
+        : null;
+
       // remove socket from room
       this.rooms[roomName] = {
         router: this.rooms[roomName].router,
@@ -103,6 +110,9 @@ export class SocketEventsGateway
         ),
         sharedScreen: {
           socketId: screenShareScktId,
+        },
+        sharedCanvas: {
+          socketId: canvasShareScktId,
         },
       };
     } catch (error) {
@@ -234,14 +244,13 @@ export class SocketEventsGateway
       this.rooms[roomName].sharedScreen.socketId &&
       (appData.exactTrackKind === ExactTrackKind.SCREEEN ||
         appData.exactTrackKind === ExactTrackKind.COMPUTERAUDIO)
-    ) {
-      // console.log(
-      //   'at transport produce this.rooms[roomName].sharedScreen.socketId',
-      //   this.rooms[roomName].sharedScreen.socketId,
-      // );
+    )
       //take some action
       return { error: 'screen already being shared by somebody' };
-    }
+
+    if (this.rooms[roomName].sharedCanvas.socketId)
+      //take some action
+      return { error: 'canvas already being shared by somebody' };
 
     const transport = this.getTransport(socket.id, false);
     // call produce based on the prameters from the client
@@ -473,6 +482,57 @@ export class SocketEventsGateway
     if (producer) producer.producer.close();
   }
 
+  @SubscribeMessage('sharedCanvas')
+  sharedCanvas(@ConnectedSocket() socket: Socket) {
+    console.log('sharedCanvas');
+    const roomName = this.peers[socket.id].roomName;
+    //if there is already canvas shared in the room then nobody else should
+    // be able to share their canvas
+    if (this.rooms[roomName].sharedScreen.socketId)
+      //take some action
+      return { error: 'canvas already being shared by somebody' };
+    this.transports.forEach((transportData) => {
+      if (
+        transportData.socketId !== socket.id &&
+        transportData.roomName === roomName &&
+        transportData.consumer
+      ) {
+        const otherPeerSocket = this.peers[transportData.socketId].socket;
+        // use socket to send producer id to producer
+        otherPeerSocket.emit('sharedCanvas');
+      }
+    });
+  }
+
+  @SubscribeMessage('closeSharedCanvas')
+  closeSharedCanvas(@ConnectedSocket() socket: Socket) {
+    const roomName = this.peers[socket.id].roomName;
+    if (!this.rooms[roomName].sharedCanvas.socketId)
+      return { error: 'no canvas is being shared' };
+
+    if (this.rooms[roomName].sharedCanvas.socketId == socket.id) {
+      this.rooms[roomName].sharedCanvas.socketId = null;
+      return { msg: 'done' };
+    } else return { msg: 'not authorized to stop' };
+  }
+
+  @SubscribeMessage('drawing')
+  drawing(@ConnectedSocket() socket: Socket, @MessageBody() data: any) {
+    const roomName = this.peers[socket.id].roomName;
+
+    this.transports.forEach((transportData) => {
+      if (
+        transportData.socketId !== socket.id &&
+        transportData.roomName === roomName &&
+        transportData.consumer
+      ) {
+        const otherPeerSocket = this.peers[transportData.socketId].socket;
+        // use socket to send producer id to producer
+        otherPeerSocket.emit('drawing', data);
+      }
+    });
+  }
+
   informConsumers(
     roomName: string,
     socketId: string,
@@ -544,6 +604,9 @@ export class SocketEventsGateway
       router: router,
       peers: [...peers, socketId],
       sharedScreen: {
+        socketId: null,
+      },
+      sharedCanvas: {
         socketId: null,
       },
     };

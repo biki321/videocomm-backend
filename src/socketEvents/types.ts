@@ -10,6 +10,10 @@ export type rooms = {
       //if null then no screen shared yet
       socketId: string | null;
     };
+    sharedCanvas: {
+      //if null then no canvas shared yet
+      socketId: string | null;
+    };
   };
 }; // { roomName1: { Router, rooms: [ socketId1, ... ] }, ...}
 

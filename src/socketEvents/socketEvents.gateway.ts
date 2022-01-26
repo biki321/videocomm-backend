@@ -12,6 +12,7 @@ import * as mediasoup from 'mediasoup';
 import { MediasoupService } from './mediasoup.service';
 import { consumer, peers, producer, rooms, transport } from './types';
 import { randomBytes } from 'crypto';
+import { ConfigService } from '@nestjs/config';
 
 /**
  * Worker
@@ -34,6 +35,7 @@ enum ExactTrackKind {
       'http://localhost:3001',
       'http://172.23.251.19:3001',
       'http://localhost:3002',
+      'https://trusting-bardeen-5c7ecb.netlify.app',
     ],
     // credentials: true,
     // exposedHeaders: ['Authorization'],
@@ -46,8 +48,12 @@ export class SocketEventsGateway
 {
   // We create a Worker as soon as our application starts
   worker: mediasoup.types.Worker;
-  constructor(private readonly mediasoupService: MediasoupService) {
+  constructor(
+    private readonly mediasoupService: MediasoupService,
+    private configService: ConfigService,
+  ) {
     this.createWorker();
+    console.log('RUNNING_IP', this.configService.get<string>('RUNNING_IP'));
   }
 
   @WebSocketServer()
@@ -712,12 +718,12 @@ export class SocketEventsGateway
   }
   async createWorker() {
     this.worker = await mediasoup.createWorker({
-      rtcMinPort: 2000,
-      rtcMaxPort: 2020,
+      rtcMinPort: this.configService.get<number>('RTCMINPORT'),
+      rtcMaxPort: this.configService.get<number>('RTCMAXPORT'),
     });
     console.log(`worker pid ${this.worker.pid}`);
 
-    this.worker.on('died', (error) => {
+    this.worker.on('died', () => {
       // This implies something serious happened, so kill the application
       console.error('mediasoup worker has died');
       setTimeout(() => process.exit(1), 2000); // exit in 2 seconds
@@ -733,8 +739,8 @@ export class SocketEventsGateway
         const webRtcTransport_options = {
           listenIps: [
             {
-              ip: '0.0.0.0', // replace with relevant IP address
-              announcedIp: '127.0.0.1',
+              ip: this.configService.get<string>('RUNNING_IP'), // replace with relevant IP address
+              // announcedIp: '127.0.0.1',
             },
           ],
           enableUdp: true,
@@ -761,6 +767,7 @@ export class SocketEventsGateway
 
         resolve(transport);
       } catch (error) {
+        console.log('err at create worker', error);
         reject(error);
       }
     });

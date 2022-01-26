@@ -11,6 +11,7 @@ import { Server, Socket } from 'socket.io';
 import * as mediasoup from 'mediasoup';
 import { MediasoupService } from './mediasoup.service';
 import { consumer, peers, producer, rooms, transport } from './types';
+import { randomBytes } from 'crypto';
 
 /**
  * Worker
@@ -599,6 +600,30 @@ export class SocketEventsGateway
         return { error: 'error' };
       }
     }
+  }
+
+  @SubscribeMessage('roomExist')
+  isRoomExist(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody() roomName: string,
+  ) {
+    if (this.rooms[roomName]) return true;
+    else return false;
+  }
+
+  @SubscribeMessage('createRoomName')
+  generateRoomName() {
+    let randomRoomName = this.randomString();
+    while (this.rooms[randomRoomName]) {
+      randomRoomName = this.randomString();
+      console.log('create room name in while');
+    }
+    console.log('final roomanme', randomRoomName);
+    return randomRoomName;
+  }
+
+  randomString(size = 9) {
+    return randomBytes(size).toString('base64').slice(0, size);
   }
 
   informConsumers(

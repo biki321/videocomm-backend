@@ -739,8 +739,8 @@ export class SocketEventsGateway
         const webRtcTransport_options = {
           listenIps: [
             {
-              ip: this.configService.get<string>('RUNNING_IP'), // replace with relevant IP address
-              // announcedIp: '127.0.0.1',
+              ip: '0.0.0.0', // replace with relevant IP address
+              announcedIp: this.configService.get<string>('RUNNING_IP'),
             },
           ],
           enableUdp: true,

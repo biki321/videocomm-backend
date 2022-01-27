@@ -1,9 +1,14 @@
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
+import { readFileSync } from 'fs';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const httpsOptions = {
+    key: readFileSync('./privKey.pem'),
+    cert: readFileSync('./fullchain.pem'),
+  };
+  const app = await NestFactory.create(AppModule, { httpsOptions });
   const config = app.get<ConfigService>(ConfigService);
 
   app.enableCors({

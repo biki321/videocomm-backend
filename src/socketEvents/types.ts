@@ -22,6 +22,9 @@ export type peers = {
   [key: string]: {
     roomName: string;
     socket: Socket;
+    email: string;
+    token: string;
+    emailVerified: boolean;
     transports: string[];
     producers: string[];
     consumers: string[];

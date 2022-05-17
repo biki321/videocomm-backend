@@ -13,7 +13,9 @@ import { MediasoupService } from './mediasoup.service';
 import { consumer, peers, producer, rooms, transport } from './types';
 import { randomBytes } from 'crypto';
 import { ConfigService } from '@nestjs/config';
-
+import * as admin from 'firebase-admin';
+import * as serviceAccount from '../firebase/firebase.config.json';
+import { DecodedIdToken } from 'firebase-admin/lib/auth/token-verifier';
 /**
  * Worker
  * |-> Router(s)
@@ -29,6 +31,19 @@ enum ExactTrackKind {
   COMPUTERAUDIO = 'computeraudio',
 }
 
+const firebase_params = {
+  type: serviceAccount.type,
+  projectId: serviceAccount.project_id,
+  privateKeyId: serviceAccount.private_key_id,
+  privateKey: serviceAccount.private_key,
+  clientEmail: serviceAccount.client_email,
+  clientId: serviceAccount.client_id,
+  authUri: serviceAccount.auth_uri,
+  tokenUri: serviceAccount.token_uri,
+  authProviderX509CertUrl: serviceAccount.auth_provider_x509_cert_url,
+  clientX509CertUrl: serviceAccount.client_x509_cert_url,
+};
+
 @WebSocketGateway({
   cors: {
     origin: [
@@ -37,8 +52,8 @@ enum ExactTrackKind {
       'http://localhost:3002',
       'https://trusting-bardeen-5c7ecb.netlify.app',
     ],
-    // credentials: true,
-    // exposedHeaders: ['Authorization'],
+    credentials: true,
+    exposedHeaders: ['Authorization'],
     // exposedHeaders: '*',
     // methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
   },
@@ -46,6 +61,7 @@ enum ExactTrackKind {
 export class SocketEventsGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
+  private defaultApp: admin.app.App;
   // We create a Worker as soon as our application starts
   worker: mediasoup.types.Worker;
   constructor(
@@ -54,6 +70,9 @@ export class SocketEventsGateway
   ) {
     this.createWorker();
     console.log('RUNNING_IP', this.configService.get<string>('RUNNING_IP'));
+    this.defaultApp = admin.initializeApp({
+      credential: admin.credential.cert(firebase_params),
+    });
   }
 
   @WebSocketServer()
@@ -65,11 +84,31 @@ export class SocketEventsGateway
   producers: producer[] = []; // [ { socketId1, roomName1, producer, }, ... ]
   consumers: consumer[] = []; // [ { socketId1, roomName1, consumer, }, ... ]
 
-  handleConnection(socket: Socket) {
+  async handleConnection(socket: Socket) {
+    const accessToken = socket.handshake.headers.authorization.split(' ')[1];
     console.log('client trying to connect');
-    socket.emit('connection-success', {
-      socketId: socket.id,
-    });
+
+    let authenticated = true;
+    try {
+      const userInfo = await this.defaultApp.auth().verifyIdToken(accessToken);
+      console.log('at handle connection', userInfo);
+      if (!userInfo.email_verified) {
+        authenticated = false;
+      }
+    } catch (error) {
+      authenticated = false;
+    }
+    if (!authenticated) {
+      socket.emit('connection-fail', {
+        socketId: socket.id,
+        msg: 'not authenticated',
+      });
+      socket.disconnect();
+    } else {
+      socket.emit('connection-success', {
+        socketId: socket.id,
+      });
+    }
   }
 
   handleDisconnect(socket: Socket) {
@@ -147,9 +186,25 @@ export class SocketEventsGateway
     // const router = rooms[roomName] && rooms[roomName].get('data').router || await createRoom(roomName, socket.id)
     const router = await this.createRoom(roomName, socket.id);
 
+    const accessToken = socket.handshake.headers.authorization.split(' ')[1];
+    console.log('at join room token', accessToken);
+    let userInfo: DecodedIdToken;
+    let authenticated = true;
+    try {
+      userInfo = await this.defaultApp.auth().verifyIdToken(accessToken);
+      if (!userInfo.email_verified) authenticated = false;
+    } catch (error) {
+      authenticated = false;
+    }
+    console.log('at join room', userInfo);
+
+    if (!authenticated) return { error: 'auth failed' };
     this.peers[socket.id] = {
       socket,
-      roomName, // Name for the Router this Peer joined
+      email: userInfo.email,
+      token: accessToken,
+      emailVerified: userInfo.email_verified,
+      roomName: roomName, // Name for the Router this Peer joined
       transports: [],
       producers: [],
       consumers: [],
@@ -626,6 +681,24 @@ export class SocketEventsGateway
     }
     console.log('final roomanme', randomRoomName);
     return randomRoomName;
+  }
+
+  @SubscribeMessage('message')
+  message(
+    @ConnectedSocket() socket: Socket,
+    @MessageBody('text') text: string,
+    @MessageBody('email') email: string,
+  ) {
+    console.log('at message', text);
+    // console.log(this.peers[socket.id]);
+    const roomName = this.peers[socket.id].roomName;
+    console.log('roomName', roomName);
+    // console.log('room', this.rooms[roomName]);
+    if (roomName && this.rooms[roomName]) {
+      this.rooms[roomName].peers.forEach((id) =>
+        this.server.to(id).emit('get_message', { text, email }),
+      );
+    }
   }
 
   randomString(size = 9) {

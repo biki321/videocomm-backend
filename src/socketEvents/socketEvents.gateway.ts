@@ -16,6 +16,7 @@ import { ConfigService } from '@nestjs/config';
 import * as admin from 'firebase-admin';
 import * as serviceAccount from '../firebase/firebase.config.json';
 import { DecodedIdToken } from 'firebase-admin/lib/auth/token-verifier';
+import { UserRecord } from 'firebase-admin/lib/auth/user-record';
 /**
  * Worker
  * |-> Router(s)
@@ -55,7 +56,7 @@ const firebase_params = {
     credentials: true,
     exposedHeaders: ['Authorization'],
     // exposedHeaders: '*',
-    // methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
+    methods: ['GET', 'PUT', 'POST', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'],
   },
 })
 export class SocketEventsGateway
@@ -86,14 +87,19 @@ export class SocketEventsGateway
 
   async handleConnection(socket: Socket) {
     const accessToken = socket.handshake.headers.authorization.split(' ')[1];
-    console.log('client trying to connect');
+    console.log('client trying to connect', accessToken);
 
     let authenticated = true;
     try {
-      const userInfo = await this.defaultApp.auth().verifyIdToken(accessToken);
-      console.log('at handle connection', userInfo);
-      if (!userInfo.email_verified) {
+      const resUser = await this.defaultApp.auth().verifyIdToken(accessToken);
+      //resUser was showing email not verified so i a fetching user again
+      const userInfo = await this.defaultApp.auth().getUser(resUser.uid);
+      console.log('user', userInfo);
+
+      console.log('at handle connection firest user', resUser);
+      if (!userInfo.emailVerified) {
         authenticated = false;
+        // check if email has a particular domain
       }
     } catch (error) {
       authenticated = false;
@@ -103,7 +109,7 @@ export class SocketEventsGateway
         socketId: socket.id,
         msg: 'not authenticated',
       });
-      socket.disconnect();
+      // socket.disconnect();
     } else {
       socket.emit('connection-success', {
         socketId: socket.id,
@@ -112,30 +118,27 @@ export class SocketEventsGateway
   }
 
   handleDisconnect(socket: Socket) {
-    // do some cleanup
-    this.transports = this.removeItems(this.transports, socket, 'transport');
-
-    //inform other peer to close canvas if disconnected peer shared canvas
-    const { roomName } = this.peers[socket.id];
-    if (
-      this.rooms[roomName].sharedCanvas.socketId &&
-      this.rooms[roomName].sharedCanvas.socketId === socket.id
-    )
-      this.transports.forEach((transportData) => {
-        if (
-          transportData.socketId !== socket.id &&
-          transportData.roomName === roomName &&
-          transportData.consumer
-        ) {
-          const otherPeerSocket = this.peers[transportData.socketId].socket;
-          // use socket to send producer id to producer
-          otherPeerSocket.emit('closeSharedCanvas');
-        }
-      });
-
+    //inform other peer to close canvas if disconnected peer shared canvas\
     try {
-      console.log('at disconect', socket.id);
       const { roomName } = this.peers[socket.id];
+      if (
+        this.rooms[roomName].sharedCanvas.socketId &&
+        this.rooms[roomName].sharedCanvas.socketId === socket.id
+      )
+        this.transports.forEach((transportData) => {
+          if (
+            transportData.socketId !== socket.id &&
+            transportData.roomName === roomName &&
+            transportData.consumer
+          ) {
+            const otherPeerSocket = this.peers[transportData.socketId].socket;
+            // use socket to send producer id to producer
+            otherPeerSocket.emit('closeSharedCanvas');
+          }
+        });
+
+      console.log('at disconect', socket.id);
+      // const { roomName } = this.peers[socket.id];
       delete this.peers[socket.id];
 
       let screenShareScktId = this.rooms[roomName].sharedScreen.socketId;
@@ -168,6 +171,8 @@ export class SocketEventsGateway
     } catch (error) {
       console.log('error at this.handleDisconnect', error);
     }
+    // do some cleanup
+    this.transports = this.removeItems(this.transports, socket, 'transport');
   }
 
   @SubscribeMessage('trigger')
@@ -188,11 +193,20 @@ export class SocketEventsGateway
 
     const accessToken = socket.handshake.headers.authorization.split(' ')[1];
     console.log('at join room token', accessToken);
-    let userInfo: DecodedIdToken;
+    let userInfo: UserRecord;
     let authenticated = true;
     try {
-      userInfo = await this.defaultApp.auth().verifyIdToken(accessToken);
-      if (!userInfo.email_verified) authenticated = false;
+      const resUser = await this.defaultApp.auth().verifyIdToken(accessToken);
+      //resUser was showing email not verified so i a fetching user again
+      userInfo = await this.defaultApp.auth().getUser(resUser.uid);
+
+      if (!userInfo.emailVerified) {
+        authenticated = false;
+        // check if email has a particular domain
+      }
+      // userInfo = await this.defaultApp.auth().verifyIdToken(accessToken);
+      // if (!userInfo.email_verified) authenticated = false;
+      //check if email has a particular domain
     } catch (error) {
       authenticated = false;
     }
@@ -203,7 +217,7 @@ export class SocketEventsGateway
       socket,
       email: userInfo.email,
       token: accessToken,
-      emailVerified: userInfo.email_verified,
+      emailVerified: userInfo.emailVerified,
       roomName: roomName, // Name for the Router this Peer joined
       transports: [],
       producers: [],
@@ -375,6 +389,7 @@ export class SocketEventsGateway
 
   @SubscribeMessage('calldrop')
   async callDrop(@ConnectedSocket() socket: Socket) {
+    console.log('atcall drop');
     this.handleDisconnect(socket);
     return { ok: true };
   }
@@ -674,7 +689,8 @@ export class SocketEventsGateway
 
   @SubscribeMessage('createRoomName')
   generateRoomName() {
-    let randomRoomName = this.randomString();
+    let randomRoomName = this.randomString().replaceAll('/', '2');
+
     while (this.rooms[randomRoomName]) {
       randomRoomName = this.randomString();
       console.log('create room name in while');

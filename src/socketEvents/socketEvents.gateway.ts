@@ -833,10 +833,9 @@ export class SocketEventsGateway
               // announcedIp: this.configService.get<string>('ANNOUNCED_IP'),
             },
           ],
-          enableUdp: false,
-          enableTcp: true,
-          preferUdp: false,
-          preferTcp: true,
+          enableUdp: true,
+          enableTcp: false,
+          preferUdp: true,
         };
 
         // https://mediasoup.org/documentation/v3/mediasoup/api/#router-createWebRtcTransport

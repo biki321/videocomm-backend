@@ -5,12 +5,11 @@ import { readFileSync } from 'fs';
 
 async function bootstrap() {
   const httpsOptions = {
-    key: readFileSync('./privKey.pem'),
-    cert: readFileSync('./fullchain.pem'),
+    key: readFileSync('./.cert/key.pem'),
+    cert: readFileSync('./.cert/cert.pem'),
   };
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { httpsOptions });
   const config = app.get<ConfigService>(ConfigService);
-
   app.enableCors({
     origin: [
       config.get('CORS_ORIGIN'),

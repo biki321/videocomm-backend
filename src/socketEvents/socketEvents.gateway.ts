@@ -48,8 +48,9 @@ const firebase_params = {
 @WebSocketGateway({
   cors: {
     origin: [
-      'http://localhost:3001',
-      'http://172.23.251.19:3001',
+      'https://localhost:3001',
+      // 'http://172.27.79.11:3001',
+      'https://192.168.43.147:3001',
       'http://localhost:3002',
       'https://trusting-bardeen-5c7ecb.netlify.app',
     ],
@@ -70,7 +71,7 @@ export class SocketEventsGateway
     private configService: ConfigService,
   ) {
     this.createWorker();
-    console.log('RUNNING_IP', this.configService.get<string>('RUNNING_IP'));
+    console.log('ANNOUNCED_IP', this.configService.get<string>('ANNOUNCED_IP'));
     this.defaultApp = admin.initializeApp({
       credential: admin.credential.cert(firebase_params),
     });
@@ -828,13 +829,14 @@ export class SocketEventsGateway
         const webRtcTransport_options = {
           listenIps: [
             {
-              ip: '0.0.0.0', // replace with relevant IP address
-              announcedIp: this.configService.get<string>('RUNNING_IP'),
+              ip: this.configService.get<string>('IP'), // replace with relevant IP address
+              // announcedIp: this.configService.get<string>('ANNOUNCED_IP'),
             },
           ],
-          enableUdp: true,
+          enableUdp: false,
           enableTcp: true,
-          preferUdp: true,
+          preferUdp: false,
+          preferTcp: true,
         };
 
         // https://mediasoup.org/documentation/v3/mediasoup/api/#router-createWebRtcTransport

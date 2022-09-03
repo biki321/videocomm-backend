@@ -19,3 +19,4 @@ This is backend code. [see client code](https://github.com/biki321/videocomm-cli
 - [Mediasoup](https://mediasoup.org/) library to create media server
 - [ReactJs](https://reactjs.org/) as frontend framework
 
+<img src="https://github.com/biki321/videocomm-backend/blob/master/videocomm.gif" width="800" height="500" alt="gif didn't load"/>
